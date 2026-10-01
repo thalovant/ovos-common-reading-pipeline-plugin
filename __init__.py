@@ -187,11 +187,11 @@ MAX_SPOKEN_WAIT = 15  # seconds, what speak(wait=True) waits
 # and the reader, waiting for nothing else, sent a hundred in ten seconds.
 # "read_ahead" in the config or settings (see _option); 1 is the old pace.
 READ_AHEAD = 3
-MAX_READ_AHEAD = 3
-# No sentence counts as heard sooner than this fast a voice could say it,
-# whatever the client reports. Ends from a client that is not saying anything
-# arrive within milliseconds; held to this, a story it skips runs at about
-# reading speed instead of emptying in seconds.
+# No sentence is over sooner than this fast a voice could say it, whatever
+# the client reports. Ends from a client that is not saying anything arrive
+# within milliseconds; held to this, a story it skips runs at about reading
+# speed instead of emptying in seconds. "fastest_chars_per_second" in the
+# config or settings; the configured chars_per_second wins when it is faster.
 FASTEST_CHARS_PER_SECOND = 30
 # Bumped whenever sentence splitting changes what a bookmark index points at,
 # so bookmarks written by an older splitter can be carried over (see
@@ -489,7 +489,7 @@ class _ReadAhead:
 
     def __init__(self, size: int, fastest: float = FASTEST_CHARS_PER_SECOND,
                  clock=time.monotonic, pause=None):
-        self.size = min(MAX_READ_AHEAD, max(1, int(size)))
+        self.size = max(1, int(size))
         self.fastest = fastest
         self.clock = clock
         # How to wait for the clock to move; tests pass one that moves it.
@@ -1483,8 +1483,8 @@ class CommonReadingPipeline(PipelinePlugin, OVOSAbstractApplication):
             versions = self._session_entry(reading.session_id, create=True)["progress_splitter"]
             if bookmark and versions.get(key) != SPLITTER_VERSION:
                 bookmark = migrate_bookmark(paragraphs, bookmark)
-        # The floor follows the configured rate when that is the faster one.
-        fastest = max(FASTEST_CHARS_PER_SECOND,
+        # The floor follows the configured speaking rate when that is the faster one.
+        fastest = max(self._positive_option("fastest_chars_per_second", FASTEST_CHARS_PER_SECOND),
                       self._positive_option("chars_per_second", SPOKEN_CHARS_PER_SECOND))
         window = _ReadAhead(self._positive_option("read_ahead", READ_AHEAD),
                             **{"fastest": fastest, **self._read_ahead_timing})

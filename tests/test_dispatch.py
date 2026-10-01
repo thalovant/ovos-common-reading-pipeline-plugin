@@ -333,9 +333,33 @@ def test_a_client_that_reports_nothing_is_paced_by_each_sentence(plugin):
     assert [round(t, 2) for t in sent_at] == [0, 0, 0, 4, 8, 12]
 
 
-def test_the_window_is_never_more_than_three(plugin):
-    assert module._ReadAhead(10).size == 3
-    assert module._ReadAhead(0).size == 1
+def test_the_window_and_the_floor_come_from_the_plugin_config(plugin):
+    """Both live in mycroft.conf, intents["ovos-common-reading-pipeline-plugin"],
+    like every other option: no value is fixed in the code."""
+    seen = {}
+    real = module._ReadAhead
+
+    def spy(size, fastest=module.FASTEST_CHARS_PER_SECOND, **timing):
+        seen.update(size=size, fastest=fastest)
+        return real(size, fastest, **timing)
+
+    plugin._read_ahead_timing = {}
+    plugin.speak = lambda *a, **kw: None
+    plugin.speak_dialog = lambda *a, **kw: None
+    plugin._fetch_content = lambda *a, **kw: []
+    plugin.config = {"read_ahead": 1, "fastest_chars_per_second": 50}
+    module._ReadAhead, saved = spy, module._ReadAhead
+    try:
+        reading = plugin._begin_reading(session_message(), {"skill_id": "p.a", "content_id": "c", "title": "T"})
+        plugin._read_content(session_message(), reading, 0)
+    finally:
+        module._ReadAhead = saved
+    assert seen == {"size": 1, "fastest": 50}
+
+
+def test_a_window_of_one_is_the_old_pace(plugin):
+    assert module._ReadAhead(1).size == 1
+    assert module._ReadAhead(0).size == 1  # never less than one
 
 
 def test_narrated_sentences_carry_ssml_beside_the_same_text(live):
