@@ -19,7 +19,8 @@ def test_preview_returns_real_excerpt_and_specific_source(plugin, monkeypatch, l
     message = session_message("visitor", data={"utterance": utterance, "lang": lang}, lang=lang,
                               thalovant_story_preview=True, thalovant_preview_request_id="original")
     skill = "provider.andlo"
-    url = "https://www.gutenberg.org/files/123/story.htm#tale"
+    url = ("https://gutenberg.pglaf.org/1/2/123/123-h/story.htm#tale" if lang == "en-CA" else
+           "https://www.gutenberg.org/files/123/story.htm#tale")
     def search(req):
         assert req.data["lang"] == lang and req.data["collection_hint"] == collection
         bus.emit(req.reply(COMMON_READING_SEARCH_RESPONSE,
@@ -45,7 +46,9 @@ def test_preview_returns_real_excerpt_and_specific_source(plugin, monkeypatch, l
     assert not plugin._readings and not plugin.settings
 
 @pytest.mark.parametrize(("intent", "sources"), [
-    ("read_any_story", None), ("read_any_story", {"title":"Book","url":"https://www.gutenberg.org/"}),
+    ("read_any_story", None),
+    ("read_any_story", {"title":"Book","url":"https://gutenberg.pglaf.org/unrelated/page.html#chapter"}),
+    ("read_any_story", {"title":"Book","url":"https://www.gutenberg.org.evil.example/files/123/book.htm#story"}), ("read_any_story", {"title":"Book","url":"https://www.gutenberg.org/"}),
     ("continue", {"title":"Book","url":"https://www.gutenberg.org/edition#chapter"}),
 ])
 def test_preview_fails_without_a_source_or_a_reading_request(plugin, intent, sources):
