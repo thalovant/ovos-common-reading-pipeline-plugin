@@ -236,6 +236,18 @@ _DOTTED_INITIALS = re.compile(r"(?:[^\W\d_]\.)+[^\W\d_]")
 _CLAUSE_BREAK = re.compile(r"[,;:](?=\s)|\s(?:--|—|–)(?=\s)")
 
 
+def _is_gutenberg_chapter(link):
+    """Only chapter links on the publisher or its Literary Archive Foundation mirror."""
+    if (link.scheme != "https" or link.query or
+            not re.fullmatch(r"[A-Za-z0-9_-]+", link.fragment)):
+        return False
+    if link.netloc in {"www.gutenberg.org", "gutenberg.org"}:
+        return bool(re.fullmatch(r"/(?:files|cache/epub)/[0-9]+/[A-Za-z0-9_/-]+\.html?", link.path))
+    if link.netloc == "gutenberg.pglaf.org":
+        return bool(re.fullmatch(r"/(?:cache/epub/|(?:[0-9]/)+)[0-9]+/[A-Za-z0-9_/-]+\.html?", link.path))
+    return False
+
+
 def _ends_sentence(text: str, match) -> bool:
     """Whether the terminator in `match` really ends a sentence."""
     rest = text[match.end():].lstrip()
@@ -976,7 +988,7 @@ class CommonReadingPipeline(PipelinePlugin, OVOSAbstractApplication):
             link = urlsplit(source["url"])
         except ValueError:
             return None
-        if link.scheme != "https" or link.hostname != "www.gutenberg.org" or not link.fragment:
+        if not _is_gutenberg_chapter(link):
             return None
         paragraphs = [p for p in fetched["paragraphs"] if isinstance(p, str) and p.strip()]
         if not paragraphs:

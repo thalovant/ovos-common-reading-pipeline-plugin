@@ -44,3 +44,7 @@ on stop; thalovant-android and thalovant-voice branches
 Claude Code. Actions Taken: wrote the version label, the tag filter, the test
 and this report; ran the test suite. Oversight: prepared for the owner's
 review as a pull request; not merged or released by the AI.
+
+## Archive chapter links
+
+The 0.1.13+thalovant.4 preview accepts chapter links for the same Project Gutenberg books on the main website or the Project Gutenberg Literary Archive Foundation mirror. The provider returns the URL for the HTML it actually read. An unavailable or unrelated source still produces the localized unavailable response. The release tag retains the native reader behavior from the previous production tag.
