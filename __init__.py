@@ -61,6 +61,8 @@ import threading
 import time
 import unicodedata
 from os.path import dirname
+from textwrap import shorten
+from urllib.parse import urlsplit
 from typing import Dict, List, Optional, Union
 from xml.sax.saxutils import escape as xml_escape
 
@@ -134,6 +136,7 @@ INTENT_HANDLERS = {
     "read_by_collection": "handle_read_by_collection",
     "read_by_type": "handle_read_by_type",
     "read_any_story": "handle_read_any_story",
+    "story_preview": "handle_story_preview",
     "continue": "handle_continue",
     "pause": "handle_pause",
 }
@@ -872,6 +875,12 @@ class CommonReadingPipeline(PipelinePlugin, OVOSAbstractApplication):
         read - so a later pipeline stage gets its chance instead. Another
         user's story on the same hub does not count. A request for the news
         is declined the same way (see NEWS_VOC)."""
+        if message.context.get("thalovant_story_preview") is True and message.context.get("thalovant_preview_request_id"):
+            # Claim the web preview before any conversational fallback. The
+            # dispatched handler can fetch a source outside match's time limit.
+            return IntentHandlerMatch(match_type=f"{self.skill_id}:story_preview",
+                                      match_data={"lang": lang}, skill_id=self.skill_id,
+                                      utterance=utterances[0] if utterances else "")
         container = self._get_intent_container(lang)
         session_id = _session_id(message)
         for utterance in utterances:
@@ -915,6 +924,65 @@ class CommonReadingPipeline(PipelinePlugin, OVOSAbstractApplication):
     # Each receives the dispatch Message: the utterance's data plus the
     # entities match() captured ("title", "collection", "content_type"),
     # "utterance" and "lang", with the requesting session in its context.
+
+    def handle_story_preview(self, message: Message):
+        """Return a short, source-backed excerpt to this web request only."""
+        if message.context.get("thalovant_story_preview") is not True or not message.context.get("thalovant_preview_request_id"):
+            return
+        lang = message.data.get("lang") or self._request_lang(message) or "en-us"
+        primary = lang.lower().replace("_", "-").split("-")[0]
+        unavailable = {
+            "fr": "Je ne trouve pas de conte correspondant dans le recueil. Essayez un autre titre ou demandez-moi un conte.",
+            "de": "Ich konnte kein passendes Märchen aus der Sammlung laden. Versuche einen anderen Titel oder bitte um ein Märchen.",
+        }.get(primary, "I couldn’t find a matching tale in the collection. Try another title or ask for a story.")
+        excerpt = self._story_preview(message, lang, primary)
+        text, sources = excerpt if excerpt else (unavailable, [])
+        self.bus.emit(message.reply("speak", {"utterance": text, "meta": {
+            "thalovant_story_preview": True,
+            "provenance": "source" if sources else "platform",
+            "sources": sources,
+        }}))
+
+    def _story_preview(self, message: Message, lang: str, primary: str):
+        collections = {"en": "andrew lang", "fr": "cosquin", "de": "bechstein"}
+        if primary not in collections:
+            return None
+        utterance = (message.data.get("utterance") or "").strip().rstrip(".?!")
+        if not utterance:
+            return None
+        intent = self._get_intent_container(lang).calc_intent(utterance)
+        kind = intent.get("name")
+        entities = intent.get("entities") or {}
+        if (intent.get("conf", 0) < MATCH_CONFIDENCE_THRESHOLD or
+                kind not in ("read_any_story", "read_content", "read_by_collection") or
+                self._asks_for_news(entities, lang)):
+            return None
+        title = entities.get("title")
+        if kind == "read_content" and not title:
+            return None
+        hint = entities.get("collection") or collections[primary]
+        candidates = self._search_providers(message, title, collection_hint=hint, content_type="story", lang=lang)
+        best = pick_best_candidate(candidates)
+        if not best or best.get("confidence", 0) < CONFIDENCE_THRESHOLD:
+            return None
+        try:
+            fetched = self._fetch_record(message, best, lang=lang, include_source=True)
+        except ContentFetchError:
+            return None
+        source = fetched.get("source")
+        if not isinstance(source, dict) or not isinstance(source.get("url"), str) or not source.get("title"):
+            return None
+        try:
+            link = urlsplit(source["url"])
+        except ValueError:
+            return None
+        if link.scheme != "https" or link.hostname != "www.gutenberg.org" or not link.fragment:
+            return None
+        paragraphs = [p for p in fetched["paragraphs"] if isinstance(p, str) and p.strip()]
+        if not paragraphs:
+            return None
+        text = shorten(" ".join(paragraphs[:3]), width=620, placeholder="…")
+        return (text, [{"title": source["title"], "url": source["url"]}]) if text.strip("…") else None
 
     def handle_read_content(self, message: Message):
         self._search_and_read(message, message.data.get("title"))
@@ -1313,8 +1381,13 @@ class CommonReadingPipeline(PipelinePlugin, OVOSAbstractApplication):
         replies = []
         answered = threading.Event()
 
+        preview_request = request.context.get("thalovant_preview_request_id")
+
         def collect(reply):
-            carrier = (getattr(reply, "context", None) or {}).get("session")
+            context = getattr(reply, "context", None) or {}
+            if preview_request and context.get("thalovant_preview_request_id") != preview_request:
+                return
+            carrier = context.get("session")
             if carrier is not None and _session_id(reply) != session_id:
                 return
             replies.append(reply)
@@ -1332,7 +1405,7 @@ class CommonReadingPipeline(PipelinePlugin, OVOSAbstractApplication):
         return replies
 
     def _search_providers(self, message: Optional[Message], phrase, collection_hint=None, content_type=None,
-                          timeout=SEARCH_TIMEOUT):
+                          timeout=SEARCH_TIMEOUT, lang=None):
         """Broadcast a search to every provider skill and collect all
         responses for a short window (unlike _fetch_content, several
         providers are expected to answer here, not just one)."""
@@ -1340,7 +1413,7 @@ class CommonReadingPipeline(PipelinePlugin, OVOSAbstractApplication):
             "phrase": phrase,
             "collection_hint": collection_hint,
             "content_type": content_type,
-        })
+        }, lang=lang)
         return [reply.data for reply in
                 self._collect_replies(request, COMMON_READING_SEARCH_RESPONSE, timeout)]
 
@@ -1353,11 +1426,16 @@ class CommonReadingPipeline(PipelinePlugin, OVOSAbstractApplication):
         return [reply.data for reply in self._collect_replies(request, COMMON_READING_PONG, timeout)]
 
     def _fetch_content(self, message: Optional[Message], candidate, timeout=FETCH_TIMEOUT, lang=None):
+        return self._fetch_record(message, candidate, timeout=timeout, lang=lang)["paragraphs"]
+
+    def _fetch_record(self, message: Optional[Message], candidate, timeout=FETCH_TIMEOUT, lang=None, include_source=False):
         """Ask the provider that won the search for the text. content_id is
         the provider's own key (it may differ from the spoken title)."""
         skill_id = candidate["skill_id"]
-        request = self._request(message, f"{COMMON_READING_FETCH_CONTENT}.{skill_id}",
-                                {"content_id": candidate["content_id"]}, lang=lang)
+        data = {"content_id": candidate["content_id"]}
+        if include_source:
+            data["include_source"] = True
+        request = self._request(message, f"{COMMON_READING_FETCH_CONTENT}.{skill_id}", data, lang=lang)
         replies = self._collect_replies(request, COMMON_READING_FETCH_CONTENT_RESPONSE, timeout,
                                         first_only=True)
         if not replies:
@@ -1365,7 +1443,7 @@ class CommonReadingPipeline(PipelinePlugin, OVOSAbstractApplication):
         paragraphs = replies[0].data.get("paragraphs")
         if not paragraphs:
             raise ContentFetchError(f"provider {skill_id} returned no text for {candidate['content_id']}")
-        return paragraphs
+        return replies[0].data
 
     def _announce_and_read(self, message: Message, candidate, bookmark):
         # The story counts as being read from here, before the announcement:
