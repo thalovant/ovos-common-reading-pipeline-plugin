@@ -17,6 +17,7 @@ def test_preview_returns_real_excerpt_and_specific_source(plugin, monkeypatch, l
     bus = plugin._bus = FakeBus()
     monkeypatch.setattr("time.sleep", lambda *_: None)
     message = session_message("visitor", data={"utterance": utterance, "lang": lang}, lang=lang,
+                              source="skills", destination="preview-client",
                               thalovant_story_preview=True, thalovant_preview_request_id="original")
     skill = "provider.andlo"
     url = ("https://gutenberg.pglaf.org/1/2/123/123-h/story.htm#tale" if lang == "en-CA" else
@@ -40,6 +41,8 @@ def test_preview_returns_real_excerpt_and_specific_source(plugin, monkeypatch, l
     assert match.match_type == f"{plugin.skill_id}:story_preview"
     plugin.handle_story_preview(message)
     [reply] = replies
+    assert reply.context["destination"] == "preview-client"
+    assert reply.context["source"] == "skills"
     assert reply.context["thalovant_preview_request_id"] == "original"
     assert reply.data == {"utterance":text,"meta":{
         "thalovant_story_preview":True, "provenance":"source", "sources":[{"title":title,"url":url}]}}
@@ -53,12 +56,16 @@ def test_preview_returns_real_excerpt_and_specific_source(plugin, monkeypatch, l
 ])
 def test_preview_fails_without_a_source_or_a_reading_request(plugin, intent, sources):
     message = session_message("visitor", data={"utterance":"Raconte-moi une histoire.", "lang":"fr-CA"},
+                              source="skills", destination="preview-client",
                               thalovant_story_preview=True, thalovant_preview_request_id="r")
     plugin._get_intent_container = MagicMock()
     plugin._get_intent_container.return_value.calc_intent.return_value = {"name":intent,"conf":1}
     plugin._search_providers = MagicMock(return_value=[{"skill_id":"skill","confidence":1}])
     plugin._fetch_record = MagicMock(return_value={"paragraphs":["Le texte."],"source":sources})
     plugin.handle_story_preview(message)
-    reply = plugin.bus.emit.call_args.args[0].data
+    speech = plugin.bus.emit.call_args.args[0]
+    assert speech.context["destination"] == "preview-client"
+    assert speech.context["thalovant_preview_request_id"] == "r"
+    reply = speech.data
     assert "conte" in reply["utterance"]
     assert reply["meta"]["provenance"] == "platform" and reply["meta"]["sources"] == []
