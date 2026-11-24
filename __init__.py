@@ -949,7 +949,8 @@ class CommonReadingPipeline(PipelinePlugin, OVOSAbstractApplication):
         }.get(primary, "I couldn’t find a matching tale in the collection. Try another title or ask for a story.")
         excerpt = self._story_preview(message, lang, primary)
         text, sources = excerpt if excerpt else (unavailable, [])
-        self.bus.emit(message.reply("speak", {"utterance": text, "meta": {
+        # The dispatched intent already points to the requesting client.
+        self.bus.emit(message.forward("speak", {"utterance": text, "meta": {
             "thalovant_story_preview": True,
             "provenance": "source" if sources else "platform",
             "sources": sources,
